@@ -62,11 +62,14 @@ Open your **Arduino IDE** and install the following libraries via *Sketch > Incl
 
 ### 2. Get Your MAC Addresses
 Upload a simple Wi-Fi STA sketch to both ESP32 boards and check the Serial Monitor (115200 baud) to record their unique MAC addresses.
+You can get the mac adress by putting the code named "Macreader" into the esps, then writitng it down.
 
 ### 3. Configure & Flash
+The code for the program is "MorseProgram".
 1. Open the respective code files for **ESP32 #1** and **ESP32 #2**.
 2. Update the `receiverAddress[]` array in each script with the other board's MAC address.
 3. Select your board and COM port in Arduino IDE, then flash the code to each board.
+   
 
 ---
 
