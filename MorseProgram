@@ -1,0 +1,259 @@
+#include <esp_now.h>
+#include <WiFi.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// --- PINS ---
+#define SCL_PIN    19  // Display SCL
+#define SDA_PIN    22  // Display SDA
+#define BUTTON_PIN 21  // Push button
+
+// --- DISPLAY ---
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// --- UNIVERSAL BROADCAST ADDRESS (No MAC needed!) ---
+uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+// --- TIMING (ms) ---
+const unsigned long DASH_THRESHOLD   = 1000; // Hold 1s+ for Dash (-)
+const unsigned long SEND_THRESHOLD   = 5000; // Hold 5s+ to Send Message
+const unsigned long LETTER_TIMEOUT   = 1200; // Silence to finish a letter
+const unsigned long WORD_TIMEOUT     = 3000; // Silence to add space
+const unsigned long SCROLL_INTERVAL  = 2000; // 2s per alphabet page
+const unsigned long STATUS_DISPLAY_TIME = 2000; // 2s for "SENT!" screen
+
+// --- STATES ---
+unsigned long pressStartTime = 0;
+unsigned long releaseTime    = 0;
+unsigned long lastScrollTime = 0;
+unsigned long statusStartTime = 0;
+int alphabetPage             = 0;
+bool isPressing             = false;
+bool isTyping               = false;
+bool hasNewReceivedMsg      = false;
+bool isShowingStatus        = false;
+
+String currentMorseBuffer = "";
+String currentTextBuffer  = "";
+String receivedMessage    = "";
+
+// --- FORWARD DECLARATIONS ---
+void updateDisplay();
+
+// --- MORSE DICTIONARY ---
+struct MorseMap {
+  const char* morse;
+  char letter;
+};
+
+const MorseMap morseTable[] = {
+  {".-", 'A'},   {"-...", 'B'}, {"-.-.", 'C'}, {"-..", 'D'},  {".", 'E'},
+  {"..-.", 'F'}, {"--.", 'G'},  {"....", 'H'}, {"..", 'I'},   {".---", 'J'},
+  {"-.-", 'K'},  {".-..", 'L'}, {"--", 'M'},   {"-.", 'N'},   {"---", 'O'},
+  {".--.", 'P'}, {"--.-", 'Q'}, {".-.", 'R'},  {"...", 'S'},  {"-", 'T'},
+  {"..-", 'U'},  {"...-", 'V'}, {".--", 'W'},  {"-..-", 'X'}, {"-.--", 'Y'},
+  {"--..", 'Z'}, {".----", '1'},{"..---", '2'},{"...--", '3'},{"....-", '4'},
+  {".....", '5'},{"-....", '6'},{"--...", '7'},{"---..", '8'},{"----.", '9'},
+  {"-----", '0'}
+};
+
+char morseToChar(String morse) {
+  for (auto item : morseTable) {
+    if (morse == item.morse) return item.letter;
+  }
+  return '?';
+}
+
+// --- ESP-NOW STRUCT ---
+typedef struct struct_message {
+  char text[128];
+} struct_message;
+
+struct_message outgoingMsg;
+struct_message incomingMsg;
+
+void OnDataRecv(const esp_now_recv_info *info, const uint8_t *incomingData, int len) {
+  memcpy(&incomingMsg, incomingData, sizeof(incomingMsg));
+  receivedMessage = String(incomingMsg.text);
+  hasNewReceivedMsg = true;
+  isTyping = false;
+  updateDisplay();
+}
+
+void updateDisplay() {
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+
+  if (isShowingStatus) {
+    // --- SENT CONFIRMATION PAGE ---
+    display.setTextSize(2);
+    display.setCursor(10, 20);
+    display.println("SENT!");
+  } else if (isTyping) {
+    // --- TYPING MODE PAGE ---
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.println("--- TYPING MODE ---");
+    display.setCursor(0, 16);
+    display.print("Morse: ");
+    display.println(currentMorseBuffer);
+    display.setCursor(0, 32);
+    display.print("Text: ");
+    display.println(currentTextBuffer);
+    display.setCursor(0, 52);
+    display.println("[Hold 5s to SEND]");
+  } else if (hasNewReceivedMsg) {
+    // --- DEDICATED RECEIVED MESSAGE PAGE ---
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.println("NEW MESSAGE:");
+    display.setCursor(0, 10);
+    display.println("---------------------");
+
+    // Dynamic sizing to ensure long messages fit
+    if (receivedMessage.length() <= 10) {
+      display.setTextSize(2);
+      display.setCursor(0, 26);
+      display.println(receivedMessage);
+    } else {
+      display.setTextSize(1);
+      display.setCursor(0, 24);
+      display.println(receivedMessage);
+    }
+
+    display.setTextSize(1);
+    display.setCursor(0, 54);
+    display.println("Tap to start typing...");
+  } else {
+    // --- IDLE GLIDING ALPHABET PAGE ---
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.println("-- MORSE ALPHABET --");
+    display.setCursor(0, 10);
+    display.println("---------------------");
+    
+    display.setCursor(0, 24);
+    if (alphabetPage == 0) {
+      display.println("A:.-  B:-... C:-.-. D:-..");
+      display.setCursor(0, 38);
+      display.println("E:.   F:..-. G:--.  H:....");
+    } else if (alphabetPage == 1) {
+      display.println("I:..  J:.--- K:-.-  L:.-..");
+      display.setCursor(0, 38);
+      display.println("M:--  N:-.   O:---  P:.--.");
+    } else if (alphabetPage == 2) {
+      display.println("Q:--.- R:.-. S:...  T:-");
+      display.setCursor(0, 38);
+      display.println("U:..-  V:...- W:.--  X:-..-");
+    } else {
+      display.println("Y:-.-- Z:--.. 1:.---- 2:..---");
+      display.setCursor(0, 38);
+      display.println("3:...-- 4:....- 5:..... 0:-----");
+    }
+
+    display.setCursor(0, 54);
+    display.println("Tap to start typing...");
+  }
+  display.display();
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    for (;;);
+  }
+  
+  WiFi.mode(WIFI_STA);
+  if (esp_now_init() != ESP_OK) return;
+
+  // Register broadcast peer so any nearby ESP32 receives the packet
+  esp_now_peer_info_t peerInfo = {};
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  peerInfo.channel = 0;  
+  peerInfo.encrypt = false;
+  esp_now_add_peer(&peerInfo);
+
+  esp_now_register_recv_cb(OnDataRecv);
+  updateDisplay();
+}
+
+void loop() {
+  unsigned long now = millis();
+
+  // Auto-clear "SENT!" status after 2 seconds
+  if (isShowingStatus && (now - statusStartTime > STATUS_DISPLAY_TIME)) {
+    isShowingStatus = false;
+    updateDisplay();
+  }
+
+  // Auto-cycle alphabet pages every 2 seconds when idle
+  if (!isTyping && !hasNewReceivedMsg && !isShowingStatus && (now - lastScrollTime > SCROLL_INTERVAL)) {
+    lastScrollTime = now;
+    alphabetPage = (alphabetPage + 1) % 4;
+    updateDisplay();
+  }
+
+  int buttonState = digitalRead(BUTTON_PIN);
+
+  // Button Pressed Down
+  if (buttonState == LOW && !isPressing) {
+    isPressing = true;
+    pressStartTime = now;
+    hasNewReceivedMsg = false; // Dismiss received message screen
+    isShowingStatus = false;
+    if (!isTyping) {
+      isTyping = true;
+      currentMorseBuffer = "";
+      currentTextBuffer = "";
+    }
+  }
+
+  // Button Released
+  if (buttonState == HIGH && isPressing) {
+    isPressing = false;
+    unsigned long duration = now - pressStartTime;
+    releaseTime = now;
+
+    if (duration >= SEND_THRESHOLD) {
+      // Hold 5s to Send
+      if (currentTextBuffer.length() > 0) {
+        currentTextBuffer.toCharArray(outgoingMsg.text, 128);
+        esp_now_send(broadcastAddress, (uint8_t *) &outgoingMsg, sizeof(outgoingMsg));
+        isShowingStatus = true;
+        statusStartTime = now;
+      }
+      isTyping = false;
+      currentTextBuffer = "";
+      currentMorseBuffer = "";
+    } else if (duration >= DASH_THRESHOLD) {
+      // Hold 1s-5s for Dash (-)
+      currentMorseBuffer += "-";
+    } else {
+      // Quick tap (< 1s) for Dot (.)
+      currentMorseBuffer += ".";
+    }
+    updateDisplay();
+  }
+
+  // Timeout logic while typing
+  if (isTyping && !isPressing) {
+    if (currentMorseBuffer.length() > 0 && (now - releaseTime > LETTER_TIMEOUT)) {
+      currentTextBuffer += morseToChar(currentMorseBuffer);
+      currentMorseBuffer = "";
+      updateDisplay();
+    }
+    if (currentTextBuffer.length() > 0 && (now - releaseTime > WORD_TIMEOUT) && !currentTextBuffer.endsWith(" ")) {
+      currentTextBuffer += " ";
+      updateDisplay();
+    }
+  }
+
+  delay(5);
+}
